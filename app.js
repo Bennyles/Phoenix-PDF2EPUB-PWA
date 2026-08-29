@@ -86,7 +86,7 @@ async function makeEpub(){
   zip.file("META-INF/container.xml",`<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
 <rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>`);
-  zip.file("OEBPS/style.css","body{font-family:serif;line-height:1.45;margin:5%;}p{margin:.7em 0;text-indent:1.2em;}h1,h2{page-break-after:avoid;text-indent:0;}h2{margin-top:1.6em;}");
+  zip.file("OEBPS/style.css","body{font-family:serif;line-height:1.45;margin:5%;text-align:left;word-spacing:normal;letter-spacing:normal;}p{margin:.7em 0;text-indent:1.2em;text-align:left;word-spacing:normal;letter-spacing:normal;}h1,h2{page-break-after:avoid;text-indent:0;text-align:left;word-spacing:normal;letter-spacing:normal;}h2{margin-top:1.6em;}");
   zip.file("OEBPS/book.xhtml",contentHtml(extractedText,title,lang));
   zip.file("OEBPS/nav.xhtml",`<?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"><head><title>Contents</title></head>
