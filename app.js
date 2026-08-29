@@ -53,12 +53,79 @@ async function extract(){
     all.push(...lines,"\n");
     progress(Math.round(p/pdf.numPages*85));
   }
-  const text=cleanText(all);
-  if(text.replace(/\s/g,"").length<300) throw new Error("PDF ini tampaknya scan/image-only atau text layer terlalu sedikit. v2.0 belum OCR.");
+  let text=cleanText(all);
+
+  if(text.replace(/\s/g,"").length<300){
+    status("Text layer sedikit — beralih ke OCR…");
+    text=await extractWithOCR(pdf);
+  }
+
   extractedText=text;
   $("preview").textContent=text.slice(0,5000)+(text.length>5000?"\n\n…":"");
   $("convertBtn").disabled=false; progress(100);status(`Analyze selesai — ${pdf.numPages} halaman.`);
   return text;
+}
+
+async function extractWithOCR(pdf){
+  const ocrLang=$("lang").value==="id" ? "ind" : "eng";
+
+  const worker=await Tesseract.createWorker(
+    ocrLang,
+    1,
+    {
+      workerPath:"./tesseract.worker.min.js",
+      corePath:"./tesscore",
+      langPath:"./tessdata",
+      logger:m=>{
+        if(m && typeof m.progress==="number"){
+          const pct=Math.round(m.progress*100);
+          status(`OCR ${m.status||""} ${pct}%`);
+        }
+      }
+    }
+  );
+
+  let ocrPages=[];
+
+  try{
+    for(let p=1;p<=pdf.numPages;p++){
+      status(`OCR halaman ${p}/${pdf.numPages}…`);
+      progress(Math.max(1,Math.round((p-1)/pdf.numPages*95)));
+
+      const page=await pdf.getPage(p);
+      const viewport=page.getViewport({scale:1.65});
+
+      const canvas=document.createElement("canvas");
+      const ctx=canvas.getContext("2d",{alpha:false});
+
+      canvas.width=Math.ceil(viewport.width);
+      canvas.height=Math.ceil(viewport.height);
+
+      await page.render({
+        canvasContext:ctx,
+        viewport:viewport,
+        background:"white"
+      }).promise;
+
+      const result=await worker.recognize(canvas);
+      const pageText=(result && result.data && result.data.text) ? result.data.text : "";
+
+      if(pageText.trim()) ocrPages.push(pageText);
+
+      canvas.width=1;
+      canvas.height=1;
+    }
+  } finally {
+    await worker.terminate();
+  }
+
+  const cleaned=cleanText(ocrPages.join("\n\n").split(/\n/));
+
+  if(cleaned.replace(/\s/g,"").length<300){
+    throw new Error("OCR selesai tetapi teks yang dikenali terlalu sedikit.");
+  }
+
+  return cleaned;
 }
 
 $("analyzeBtn").onclick=async()=>{try{await extract()}catch(e){status("ERROR: "+e.message);progress(0)}};
