@@ -12,7 +12,10 @@ if("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
 $("pdfFile").addEventListener("change",e=>{
   selectedFile=e.target.files[0]||null; extractedText="";
   $("fileName").textContent=selectedFile?`${selectedFile.name} — ${(selectedFile.size/1048576).toFixed(1)} MB`:"Belum ada PDF dipilih.";
-  if(selectedFile&&!$("title").value) $("title").value=selectedFile.name.replace(/\.pdf$/i,"").replace(/[_-]+/g," ");
+  if(selectedFile){
+    $("title").value=selectedFile.name.replace(/\.pdf$/i,"").replace(/[_-]+/g," ").replace(/\s+/g," ").trim();
+    $("author").value="";
+  }
   $("analyzeBtn").disabled=!selectedFile;$("convertBtn").disabled=true;progress(0);status("Siap dianalisis.");
 });
 
