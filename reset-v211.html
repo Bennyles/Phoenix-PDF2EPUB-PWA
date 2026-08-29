@@ -1,0 +1,13 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Phoenix Update</title></head>
+<body style="font-family:system-ui;background:#0b1220;color:white;padding:30px">
+<h2>Phoenix PDF2EPUB v2.1.1</h2><p id="s">Membersihkan cache lama…</p>
+<script>
+(async()=>{
+ try{
+   if("serviceWorker" in navigator){const regs=await navigator.serviceWorker.getRegistrations();await Promise.all(regs.map(r=>r.unregister()));}
+   if("caches" in window){const ks=await caches.keys();await Promise.all(ks.map(k=>caches.delete(k)));}
+ }catch(e){}
+ document.getElementById("s").textContent="Selesai. Membuka v2.1.1…";
+ setTimeout(()=>location.replace("./?v=2.1.1&t="+Date.now()),800);
+})();
+</script></body></html>
