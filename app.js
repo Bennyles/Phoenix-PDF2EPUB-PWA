@@ -44,24 +44,19 @@ function cleanText(lines){
 function usefulChars(s){return (s||"").replace(/\s/g,"").length;}
 function ocrLang(){return $("lang").value==="id"?"ind+eng":"eng";}
 
-async function ocrPage(page,pageno,total){
-  if(!window.Tesseract) throw new Error("Mesin OCR gagal dimuat. Pastikan internet aktif lalu reload aplikasi.");
-  const viewport=page.getViewport({scale:1.20});
+async function ocrPageWithWorker(worker,page){
+  const viewport=page.getViewport({scale:1.05});
   const canvas=document.createElement("canvas");
-  const ctx=canvas.getContext("2d",{alpha:false,willReadFrequently:true});
+  const ctx=canvas.getContext("2d",{alpha:false});
   canvas.width=Math.ceil(viewport.width); canvas.height=Math.ceil(viewport.height);
   try{
-    await page.render({canvasContext:ctx,viewport}).promise;
-    const result=await Tesseract.recognize(canvas,ocrLang(),{
-      workerPath:"worker.min.js"
-    });
+    await page.render({canvasContext:ctx,viewport,background:"white"}).promise;
+    const result=await worker.recognize(canvas);
     return (result&&result.data&&result.data.text)||"";
-  }finally{
-    canvas.width=1;canvas.height=1;
-  }
+  }finally{canvas.width=1;canvas.height=1;}
 }
 
-const PHX_DB="phoenix-pdf2epub-v232";
+const PHX_DB="phoenix-pdf2epub-v232"; // sengaja sama: checkpoint v2.3.2 dipakai ulang
 function cpOpen(){
   return new Promise((resolve,reject)=>{
     const r=indexedDB.open(PHX_DB,1);
@@ -75,26 +70,24 @@ async function cpGet(k){
 async function cpPut(k,v){
   try{const db=await cpOpen();await new Promise((res,rej)=>{const r=db.transaction("pages","readwrite").objectStore("pages").put(v,k);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});}catch(e){}
 }
-async function pool(items,limit,fn){
-  let next=0;
-  async function runner(){while(true){const i=next++;if(i>=items.length)return;await fn(items[i],i);}}
-  await Promise.all(Array.from({length:Math.min(limit,items.length)},()=>runner()));
+async function makeOCRWorker(){
+  if(!window.Tesseract) throw new Error("Mesin OCR gagal dimuat. Reload aplikasi lalu coba lagi.");
+  return await Tesseract.createWorker(ocrLang(),1,{workerPath:"./worker.min.js"});
 }
 async function extract(){
   if(!selectedFile) throw new Error("Pilih PDF dahulu.");
-  status("Membaca PDF…");progress(2);
+  status("Membaca PDF…"); progress(2);
   const data=new Uint8Array(await selectedFile.arrayBuffer());
   const pdf=await pdfjsLib.getDocument({data}).promise;
   const total=pdf.numPages;
   const pages=new Array(total).fill("");
   const needOCR=[];
-  let digitalCount=0, resumed=0, ocrDone=0;
+  let digitalCount=0,resumed=0,ocrDone=0;
   const baseKey=[selectedFile.name,selectedFile.size,selectedFile.lastModified,$("lang").value].join("|");
 
-  // Fase cepat: baca text-layer semua halaman dahulu. OCR belum dijalankan.
   for(let pageno=1;pageno<=total;pageno++){
-    status(`Analisa text-layer ${pageno}/${total}…`);
-    progress(Math.round((pageno/total)*20));
+    status(`Deteksi teks ${pageno}/${total}…`);
+    progress(Math.round((pageno/total)*15));
     const page=await pdf.getPage(pageno);
     try{
       const content=await page.getTextContent();
@@ -104,7 +97,6 @@ async function extract(){
     }finally{try{page.cleanup();}catch(e){}}
   }
 
-  // Pulihkan OCR yang pernah selesai agar tidak mulai dari nol.
   const pending=[];
   for(const pageno of needOCR){
     const saved=await cpGet(baseKey+"|p"+pageno);
@@ -113,26 +105,45 @@ async function extract(){
   }
 
   if(pending.length){
-    status(`FAST OCR: ${pending.length} halaman, 2 worker paralel…`);
-    await pool(pending,2,async pageno=>{
-      const page=await pdf.getPage(pageno);
-      try{
-        const txt=await ocrPage(page,pageno,total);
-        pages[pageno-1]=txt;
-        await cpPut(baseKey+"|p"+pageno,txt);
-        ocrDone++;
-        const done=resumed+ocrDone;
-        progress(20+Math.round((done/Math.max(1,needOCR.length))*68));
-        status(`FAST OCR ${done}/${needOCR.length} halaman (2 worker) — checkpoint tersimpan`);
-      }finally{try{page.cleanup();}catch(e){}}
-    });
+    const hc=navigator.hardwareConcurrency||4;
+    const dm=navigator.deviceMemory||4;
+    const workerCount=(hc>=8 && dm>=6 && pending.length>=30)?3:2;
+    status(`Menyiapkan ${workerCount} OCR worker permanen…`);
+    const workers=await Promise.all(Array.from({length:workerCount},()=>makeOCRWorker()));
+    let next=0;
+    const started=Date.now();
+    try{
+      await Promise.all(workers.map(async worker=>{
+        while(true){
+          const idx=next++;
+          if(idx>=pending.length) return;
+          const pageno=pending[idx];
+          const page=await pdf.getPage(pageno);
+          try{
+            const txt=await ocrPageWithWorker(worker,page);
+            pages[pageno-1]=txt;
+            await cpPut(baseKey+"|p"+pageno,txt);
+            ocrDone++;
+            const done=resumed+ocrDone;
+            const elapsed=Math.max(1,(Date.now()-started)/1000);
+            const rate=ocrDone/elapsed;
+            const left=Math.max(0,pending.length-ocrDone);
+            const eta=rate>0?Math.ceil(left/rate):0;
+            progress(15+Math.round((done/Math.max(1,needOCR.length))*75));
+            status(`FAST OCR ${done}/${needOCR.length} — ${workerCount} worker tetap — ETA ~${Math.ceil(eta/60)} menit`);
+          }finally{try{page.cleanup();}catch(e){}}
+        }
+      }));
+    }finally{
+      await Promise.all(workers.map(w=>w.terminate().catch(()=>{})));
+    }
   }
 
   const text=cleanText(pages.flatMap(x=>[x,"\n"]));
-  if(usefulChars(text)<80) throw new Error("Teks tidak cukup terbaca. Coba PDF lain atau pastikan halaman scan cukup jelas.");
+  if(usefulChars(text)<80) throw new Error("Teks tidak cukup terbaca.");
   extractedText=text;
   $("preview").textContent=text.slice(0,5000)+(text.length>5000?"\n\n…":"");
-  $("convertBtn").disabled=false;progress(100);
+  $("convertBtn").disabled=false; progress(100);
   status(`Analyze selesai — ${total} halaman; digital ${digitalCount}, OCR baru ${ocrDone}, resume ${resumed}.`);
   return text;
 }
