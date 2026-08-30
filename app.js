@@ -10,8 +10,8 @@ if("serviceWorker" in navigator){
   (async()=>{
     try{
       const keys=await caches.keys();
-      await Promise.all(keys.filter(k=>k.startsWith("phoenix-pdf2epub-")&&k!=="phoenix-pdf2epub-v2.2.0").map(k=>caches.delete(k)));
-      const reg=await navigator.serviceWorker.register("sw.js?v=220",{updateViaCache:"none"});
+      await Promise.all(keys.filter(k=>k.startsWith("phoenix-pdf2epub-")&&k!=="phoenix-pdf2epub-v2.3.2").map(k=>caches.delete(k)));
+      const reg=await navigator.serviceWorker.register("sw.js?v=232",{updateViaCache:"none"});
       await reg.update();
     }catch(e){console.warn("SW update",e);}
   })();
@@ -46,55 +46,96 @@ function ocrLang(){return $("lang").value==="id"?"ind+eng":"eng";}
 
 async function ocrPage(page,pageno,total){
   if(!window.Tesseract) throw new Error("Mesin OCR gagal dimuat. Pastikan internet aktif lalu reload aplikasi.");
-  status(`OCR halaman ${pageno}/${total}…`);
-  const viewport=page.getViewport({scale:1.65});
+  const viewport=page.getViewport({scale:1.20});
   const canvas=document.createElement("canvas");
-  const ctx=canvas.getContext("2d",{alpha:false});
+  const ctx=canvas.getContext("2d",{alpha:false,willReadFrequently:true});
   canvas.width=Math.ceil(viewport.width); canvas.height=Math.ceil(viewport.height);
-  await page.render({canvasContext:ctx,viewport}).promise;
-  const result=await Tesseract.recognize(canvas,ocrLang(),{
-    logger:m=>{
-      if(m.status==="recognizing text" && typeof m.progress==="number"){
-        const base=(pageno-1)/total*88;
-        progress(Math.round(base+(m.progress*(88/total))));
-      }
-    },
-    workerPath:"worker.min.js"
-  });
-  canvas.width=1;canvas.height=1;
-  return (result&&result.data&&result.data.text)||"";
+  try{
+    await page.render({canvasContext:ctx,viewport}).promise;
+    const result=await Tesseract.recognize(canvas,ocrLang(),{
+      workerPath:"worker.min.js"
+    });
+    return (result&&result.data&&result.data.text)||"";
+  }finally{
+    canvas.width=1;canvas.height=1;
+  }
 }
 
+const PHX_DB="phoenix-pdf2epub-v232";
+function cpOpen(){
+  return new Promise((resolve,reject)=>{
+    const r=indexedDB.open(PHX_DB,1);
+    r.onupgradeneeded=()=>{const db=r.result;if(!db.objectStoreNames.contains("pages"))db.createObjectStore("pages");};
+    r.onsuccess=()=>resolve(r.result); r.onerror=()=>reject(r.error);
+  });
+}
+async function cpGet(k){
+  try{const db=await cpOpen();return await new Promise((res,rej)=>{const r=db.transaction("pages","readonly").objectStore("pages").get(k);r.onsuccess=()=>res(r.result||"");r.onerror=()=>rej(r.error);});}catch(e){return "";}
+}
+async function cpPut(k,v){
+  try{const db=await cpOpen();await new Promise((res,rej)=>{const r=db.transaction("pages","readwrite").objectStore("pages").put(v,k);r.onsuccess=()=>res();r.onerror=()=>rej(r.error);});}catch(e){}
+}
+async function pool(items,limit,fn){
+  let next=0;
+  async function runner(){while(true){const i=next++;if(i>=items.length)return;await fn(items[i],i);}}
+  await Promise.all(Array.from({length:Math.min(limit,items.length)},()=>runner()));
+}
 async function extract(){
   if(!selectedFile) throw new Error("Pilih PDF dahulu.");
   status("Membaca PDF…");progress(2);
   const data=new Uint8Array(await selectedFile.arrayBuffer());
   const pdf=await pdfjsLib.getDocument({data}).promise;
-  let pages=[],ocrCount=0,digitalCount=0;
-  for(let p=1;p<=pdf.numPages;p++){
-    const page=await pdf.getPage(p);
-    status(`Analisa halaman ${p}/${pdf.numPages}…`);
-    const content=await page.getTextContent();
-    const raw=content.items.map(x=>x.str).join(" ").replace(/\s+/g," ").trim();
-    let pageText=raw;
-    // PDF campuran: text layer yang sangat tipis biasanya hanya nomor halaman/watermark.
-    if(usefulChars(raw)<80){
-      pageText=await ocrPage(page,p,pdf.numPages);ocrCount++;
-    }else{
-      digitalCount++;
-    }
-    pages.push(pageText,"\n");
-    progress(Math.max($("progress").value,Math.round(p/pdf.numPages*88)));
+  const total=pdf.numPages;
+  const pages=new Array(total).fill("");
+  const needOCR=[];
+  let digitalCount=0, resumed=0, ocrDone=0;
+  const baseKey=[selectedFile.name,selectedFile.size,selectedFile.lastModified,$("lang").value].join("|");
+
+  // Fase cepat: baca text-layer semua halaman dahulu. OCR belum dijalankan.
+  for(let pageno=1;pageno<=total;pageno++){
+    status(`Analisa text-layer ${pageno}/${total}…`);
+    progress(Math.round((pageno/total)*20));
+    const page=await pdf.getPage(pageno);
+    try{
+      const content=await page.getTextContent();
+      const raw=content.items.map(x=>x.str).join(" ").replace(/\s+/g," ").trim();
+      if(usefulChars(raw)>=80){pages[pageno-1]=raw;digitalCount++;}
+      else needOCR.push(pageno);
+    }finally{try{page.cleanup();}catch(e){}}
   }
-  const text=cleanText(pages);
+
+  // Pulihkan OCR yang pernah selesai agar tidak mulai dari nol.
+  const pending=[];
+  for(const pageno of needOCR){
+    const saved=await cpGet(baseKey+"|p"+pageno);
+    if(usefulChars(saved)>=20){pages[pageno-1]=saved;resumed++;}
+    else pending.push(pageno);
+  }
+
+  if(pending.length){
+    status(`FAST OCR: ${pending.length} halaman, 2 worker paralel…`);
+    await pool(pending,2,async pageno=>{
+      const page=await pdf.getPage(pageno);
+      try{
+        const txt=await ocrPage(page,pageno,total);
+        pages[pageno-1]=txt;
+        await cpPut(baseKey+"|p"+pageno,txt);
+        ocrDone++;
+        const done=resumed+ocrDone;
+        progress(20+Math.round((done/Math.max(1,needOCR.length))*68));
+        status(`FAST OCR ${done}/${needOCR.length} halaman (2 worker) — checkpoint tersimpan`);
+      }finally{try{page.cleanup();}catch(e){}}
+    });
+  }
+
+  const text=cleanText(pages.flatMap(x=>[x,"\n"]));
   if(usefulChars(text)<80) throw new Error("Teks tidak cukup terbaca. Coba PDF lain atau pastikan halaman scan cukup jelas.");
   extractedText=text;
   $("preview").textContent=text.slice(0,5000)+(text.length>5000?"\n\n…":"");
   $("convertBtn").disabled=false;progress(100);
-  status(`Analyze selesai — ${pdf.numPages} halaman; digital ${digitalCount}, OCR ${ocrCount}.`);
+  status(`Analyze selesai — ${total} halaman; digital ${digitalCount}, OCR baru ${ocrDone}, resume ${resumed}.`);
   return text;
 }
-
 $("analyzeBtn").onclick=async()=>{try{$("analyzeBtn").disabled=true;await extract()}catch(e){status("ERROR: "+e.message);progress(0)}finally{$("analyzeBtn").disabled=!selectedFile;}};
 
 function esc(s){return String(s||"").replace(/[&<>\"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));}
