@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#111827">
+  <meta name="description" content="Phoenix PDF2EPUB — converter PDF digital ke EPUB reflowable">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon-192.png">
+  <title>Phoenix PDF2EPUB</title>
+  <link rel="stylesheet" href="style.css?v=220">
+</head>
+<body>
+<main>
+  <header>
+    <div class="logo">P</div>
+    <div><h1>Phoenix PDF2EPUB</h1><p>PDF digital/scan → EPUB reflowable</p></div>
+  </header>
+
+  <section class="card">
+    <label class="pick">
+      <input id="pdfFile" type="file" accept="application/pdf,.pdf">
+      <span>📄 PILIH PDF</span>
+    </label>
+    <div id="fileName" class="muted">Belum ada PDF dipilih.</div>
+  </section>
+
+  <section class="card grid">
+    <label>Judul<input id="title" placeholder="Otomatis dari nama file"></label>
+    <label>Penulis<input id="author" placeholder="Opsional"></label>
+    <label>Bahasa
+      <select id="lang"><option value="id">Indonesia</option><option value="en">English</option></select>
+    </label>
+  </section>
+
+  <section class="card actions">
+    <button id="analyzeBtn" disabled>🔍 ANALYZE</button>
+    <button id="convertBtn" disabled>📖 CONVERT EPUB</button>
+    <button id="installBtn" hidden>⬇ INSTALL APP</button>
+  </section>
+
+  <section class="card">
+    <div class="statusline"><strong>Status</strong><span id="status">v2.2 siap.</span></div>
+    <progress id="progress" value="0" max="100"></progress>
+    <pre id="preview">Preview teks akan muncul di sini.</pre>
+  </section>
+
+  <section class="card note">
+    <b>v2.2 OCR:</b> PDF digital dibaca langsung; halaman scan/image-only otomatis diproses OCR. PDF campuran memakai text-layer bila tersedia dan OCR hanya pada halaman yang perlu. OCR pertama kali memerlukan internet untuk memuat mesin/bahasa; sesudah aset tersimpan browser proses berikutnya lebih cepat.
+  </section>
+</main>
+
+<script src="pdf.min.js?v=220"></script>
+<script src="jszip.min.js?v=220"></script>
+<script src="tesseract.min.js?v=220"></script>
+<script src="app.js?v=220"></script>
+</body>
+</html>
